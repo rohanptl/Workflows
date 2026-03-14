@@ -1,0 +1,74 @@
+name: Weekly Portfolio Run
+
+on:
+  schedule:
+    # Every Saturday at 8:00 AM UTC
+    - cron: "0 8 * * 6"
+  workflow_dispatch:
+
+jobs:
+  run-portfolio:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy openpyxl
+
+      - name: Run allocator
+        run: |
+          python wealthfront_strategy_stack_backtest_progress.py \
+            --mode allocate \
+            --universe "./WealthfrontETFs.txt" \
+            --holdings "./holdings.csv" \
+            --export-prefix weekly_portfolio
+
+      - name: Upload CSV outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-portfolio-output
+          path: |
+            weekly_portfolio_full_metrics.csv
+            weekly_portfolio_rebalance_actions.csv
+
+      - name: Build email summary
+        run: |
+          python - <<'PY'
+          import pandas as pd
+
+          df = pd.read_csv("weekly_portfolio_rebalance_actions.csv")
+          top = df.sort_values("target_alloc_pct", ascending=False).head(10)
+
+          lines = ["Weekly portfolio run completed.", "", "Top target allocations:"]
+          for _, r in top.iterrows():
+              lines.append(
+                  f"{r['ticker']}: current={r['current_alloc_pct']:.2f}% "
+                  f"target={r['target_alloc_pct']:.2f}% "
+                  f"delta={r['delta_pct_points']:+.2f} pts"
+              )
+
+          with open("email_body.txt", "w", encoding="utf-8") as f:
+              f.write("\n".join(lines))
+          PY
+
+      - name: Send email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: Weekly Portfolio Output
+          to: your-email@example.com
+          from: your-email@example.com
+          body: file://email_body.txt
+          attachments: weekly_portfolio_full_metrics.csv,weekly_portfolio_rebalance_actions.csv
